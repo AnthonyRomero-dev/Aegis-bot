@@ -1,4 +1,4 @@
-# Copyright (c) 2025 Anthonydev — Todos los derechos reservados.
+# Copyright (c) 2026 Anthonydev — Todos los derechos reservados.
 
 import discord
 from discord.ext import commands, tasks
@@ -103,11 +103,7 @@ def set_footer(embed: discord.Embed, bot_user: discord.ClientUser,
 # ──────────────────────────────────────────────
 
 def cargar_fuente(size: int = 36, negrita: bool = False):
-    """
-    Carga una fuente local (misma carpeta que orion.py).
-    Orden: whitneysemibold si negrita, ggsans-Medium si no.
-    Fallback: fuente mínima de Pillow.
-    """
+    # whitneysemibold si negrita, ggsans-Medium si no; fallback a Pillow default
     if not PILLOW_OK:
         return None
 
@@ -132,15 +128,39 @@ def cargar_fuente(size: int = 36, negrita: bool = False):
         return ImageFont.load_default()            # Pillow < 10
 
 
+def _construir_tarjeta_sync(avatar_bytes: bytes, nombre: str, servidor: str, numero: int, fecha_cuenta: str) -> bytes:
+    avatar_img = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA").resize((130, 130))
+    mascara = Image.new("L", (130, 130), 0)
+    ImageDraw.Draw(mascara).ellipse((0, 0, 130, 130), fill=255)
+    avatar_circ = Image.new("RGBA", (130, 130), (0, 0, 0, 0))
+    avatar_circ.paste(avatar_img, (0, 0), mascara)
+
+    tarjeta = Image.new("RGBA", (620, 200), (30, 31, 48))
+    draw = ImageDraw.Draw(tarjeta)
+    draw.rectangle([(0, 0), (170, 200)], fill=(88, 101, 242))
+    draw.rectangle([(0, 192), (620, 200)], fill=(88, 101, 242))
+    draw.rectangle([(612, 0), (620, 200)], fill=(88, 101, 242))
+    tarjeta.paste(avatar_circ, (20, 35), avatar_circ)
+
+    f_sub     = cargar_fuente(18)
+    f_nombre  = cargar_fuente(32, negrita=True)
+    f_detalle = cargar_fuente(20)
+
+    draw.text((185, 32),  "Bienvenido/a al servidor!", font=f_sub,     fill=(160, 170, 255))
+    draw.text((185, 58),  nombre,                      font=f_nombre,  fill=(255, 255, 255))
+    draw.text((185, 105), f"Servidor:  {servidor}",    font=f_detalle, fill=(180, 185, 220))
+    draw.text((185, 140), f"Miembro #  {numero:,}",    font=f_detalle, fill=(180, 185, 220))
+    draw.text((185, 168), f"Cuenta creada: {fecha_cuenta}", font=f_detalle, fill=(130, 135, 170))
+
+    buf = io.BytesIO()
+    tarjeta.save(buf, "PNG")
+    return buf.getvalue()
+
+
 async def generar_tarjeta_bienvenida(member: discord.Member):
-    """
-    Descarga el avatar del miembro y genera una tarjeta de bienvenida PNG.
-    Devuelve discord.File o None si algo falla.
-    """
     if not PILLOW_OK:
         return None
     try:
-        # 1. Descargar avatar
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 str(member.display_avatar.url),
@@ -150,47 +170,18 @@ async def generar_tarjeta_bienvenida(member: discord.Member):
                     return None
                 avatar_bytes = await resp.read()
 
-        # 2. Avatar circular 130x130
-        avatar_img = Image.open(io.BytesIO(avatar_bytes)).convert("RGBA").resize((130, 130))
-        mascara = Image.new("L", (130, 130), 0)
-        ImageDraw.Draw(mascara).ellipse((0, 0, 130, 130), fill=255)
-        avatar_circ = Image.new("RGBA", (130, 130), (0, 0, 0, 0))
-        avatar_circ.paste(avatar_img, (0, 0), mascara)
+        nombre      = member.display_name[:24]
+        servidor    = member.guild.name[:32]
+        numero      = member.guild.member_count
+        fecha_cuenta = member.created_at.strftime("%d/%m/%Y")
 
-        # 3. Fondo 620x200 oscuro estilo Discord
-        tarjeta = Image.new("RGBA", (620, 200), (30, 31, 48))
-        draw = ImageDraw.Draw(tarjeta)
-
-        # Franja izquierda blurple
-        draw.rectangle([(0, 0), (170, 200)], fill=(88, 101, 242))
-        # Borde inferior decorativo
-        draw.rectangle([(0, 192), (620, 200)], fill=(88, 101, 242))
-        # Borde derecho decorativo
-        draw.rectangle([(612, 0), (620, 200)], fill=(88, 101, 242))
-
-        # 4. Pegar avatar en la franja
-        tarjeta.paste(avatar_circ, (20, 35), avatar_circ)
-
-        # 5. Textos
-        f_sub     = cargar_fuente(18)
-        f_nombre  = cargar_fuente(32, negrita=True)
-        f_detalle = cargar_fuente(20)
-
-        nombre   = member.display_name[:24]
-        servidor = member.guild.name[:32]
-        numero   = member.guild.member_count
-
-        draw.text((185, 32),  "Bienvenido/a al servidor!",                          font=f_sub,     fill=(160, 170, 255))
-        draw.text((185, 58),  nombre,                                                font=f_nombre,  fill=(255, 255, 255))
-        draw.text((185, 105), f"Servidor:  {servidor}",                              font=f_detalle, fill=(180, 185, 220))
-        draw.text((185, 140), f"Miembro #  {numero:,}",                              font=f_detalle, fill=(180, 185, 220))
-        draw.text((185, 168), f"Cuenta creada: {member.created_at.strftime('%d/%m/%Y')}", font=f_detalle, fill=(130, 135, 170))
-
-        # 6. Exportar
-        buf = io.BytesIO()
-        tarjeta.save(buf, "PNG")
-        buf.seek(0)
-        return discord.File(fp=buf, filename="bienvenida.png")
+        loop = asyncio.get_running_loop()
+        png_bytes = await loop.run_in_executor(
+            None,
+            _construir_tarjeta_sync,
+            avatar_bytes, nombre, servidor, numero, fecha_cuenta
+        )
+        return discord.File(fp=io.BytesIO(png_bytes), filename="bienvenida.png")
 
     except Exception as e:
         logging.getLogger("discord").warning(f"Error generando tarjeta de bienvenida: {e}")
@@ -279,6 +270,20 @@ TEXTOS = {
         "ticket_sin_config": "⚠️ El sistema de tickets no está configurado.",
         "ticket_cerrado_msg": "🔒 Ticket cerrado por {usuario}.",
         "ticket_transcript_titulo": "📋 Transcript del ticket",
+        "ticket_categoria_soporte": "soporte",
+        "ticket_categoria_reporte": "reporte",
+        "ticket_categoria_apelacion": "apelacion",
+        "ticket_selecciona_tipo": "¿Qué tipo de ticket quieres abrir?",
+        "ticket_tipo_soporte": "🛠️ Soporte — Ayuda general",
+        "ticket_tipo_reporte": "🚨 Reporte — Reportar a un usuario",
+        "ticket_tipo_apelacion": "⚖️ Apelación — Apelar una sanción",
+        "ticket_categoria_soporte": "support",
+        "ticket_categoria_reporte": "report",
+        "ticket_categoria_apelacion": "appeal",
+        "ticket_selecciona_tipo": "What type of ticket do you want to open?",
+        "ticket_tipo_soporte": "🛠️ Support — General help",
+        "ticket_tipo_reporte": "🚨 Report — Report a user",
+        "ticket_tipo_apelacion": "⚖️ Appeal — Appeal a sanction",
         "ticket_embed_titulo": "🎫 Ticket #{numero}",
         "ticket_embed_desc": "Hola {mencion}, el equipo de soporte te atenderá en breve.\nUsa el botón para cerrar el ticket cuando termines.",
         "ticket_setup_ok": "✅ Panel de tickets publicado en {canal}.",
@@ -531,7 +536,8 @@ def t(guild_id, clave, **kwargs):
 
 # --- config por servidor ---
 
-CONFIG_FILE = "server_config.json"
+CONFIG_FILE    = "server_config.json"
+REPORTES_FILE  = "reportes_globales.json"
 
 def cargar_config():
     if os.path.exists(CONFIG_FILE):
@@ -539,19 +545,58 @@ def cargar_config():
             return json.load(f)
     return {}
 
-def guardar_config(data):
-    with open(CONFIG_FILE, "w") as f:
+def _guardar_atomico(path: str, data: dict):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=4)
+    os.replace(tmp, path)
+
+def guardar_config(data):
+    _guardar_atomico(CONFIG_FILE, data)
+
+_config_lock = asyncio.Lock()
 
 async def guardar_config_async():
-    # run_in_executor para no bloquear el event loop en escrituras frecuentes
-    loop = asyncio.get_event_loop()
-    try:
-        await loop.run_in_executor(None, guardar_config, server_config)
-    except Exception as e:
-        logger.error(f"Error guardando config: {e}")
+    async with _config_lock:
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, _guardar_atomico, CONFIG_FILE, server_config)
+        except Exception as e:
+            logger.error(f"Error guardando config: {e}")
 
-server_config = cargar_config()
+def _cargar_reportes_file() -> dict:
+    if os.path.exists(REPORTES_FILE):
+        try:
+            with open(REPORTES_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def _guardar_reportes_file(data: dict):
+    _guardar_atomico(REPORTES_FILE, data)
+
+_reportes_lock = asyncio.Lock()
+
+async def guardar_reportes_async():
+    async with _reportes_lock:
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, _guardar_atomico, REPORTES_FILE, reportes_globales)
+        except Exception as e:
+            logger.error(f"Error guardando reportes: {e}")
+
+server_config    = cargar_config()
+reportes_globales: dict = _cargar_reportes_file()
+
+# Migración: si había reportes en server_config bajo __reportes__, moverlos
+if "__reportes__" in server_config:
+    _migrados = server_config.pop("__reportes__", {})
+    for uid, info in _migrados.items():
+        if uid not in reportes_globales:
+            reportes_globales[uid] = info
+    _guardar_reportes_file(reportes_globales)
+    guardar_config(server_config)
 
 def get_guild_config(guild_id):
     gid = str(guild_id)
@@ -571,6 +616,7 @@ def get_guild_config(guild_id):
         }
         guardar_config(server_config)
     cfg = server_config[gid]
+    campos_faltantes = False
     for campo, valor in [
         ("filtro_palabras", []),
         ("anti_links", False),
@@ -594,7 +640,9 @@ def get_guild_config(guild_id):
     ]:
         if campo not in cfg:
             cfg[campo] = valor
-            guardar_config(server_config)
+            campos_faltantes = True
+    if campos_faltantes:
+        guardar_config(server_config)
     return server_config[gid]
 
 # --- logging ---
@@ -1343,12 +1391,18 @@ def log_mensaje_archivo(tipo: str, guild_id: int, guild_name: str, canal_name: s
     else:
         return
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _log_mensaje_sync, entrada, nombre_archivo)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, _log_mensaje_sync, entrada, nombre_archivo)
+    except RuntimeError:
+        _log_mensaje_sync(entrada, nombre_archivo)
 
 # --- anti-spam ---
 
 spam_tracker = defaultdict(list)
+# contador de slowmode por canal: {canal_id: nivel} — sube con cada detección, baja solo
+slowmode_tracker: dict = defaultdict(int)
+SLOWMODE_NIVELES = [5, 30, 60, 120]  # segundos por nivel
 
 async def verificar_spam(message):
     cfg = get_guild_config(message.guild.id)
@@ -1367,11 +1421,12 @@ async def verificar_spam(message):
     if len(spam_tracker[key]) >= limite:
         guild = message.guild
         miembro = message.author
+        canal = message.channel
 
-        # limpiar antes del kick para evitar que mensajes concurrentes re-disparen esto
         spam_tracker[key].clear()
-        # Borrar mensajes del spammer en todos los canales de texto visibles
-        for canal_txt in message.guild.text_channels:
+
+        # Borrar mensajes del spammer en todos los canales
+        for canal_txt in guild.text_channels:
             try:
                 msgs = [m async for m in canal_txt.history(limit=100) if m.author.id == user_id]
                 if msgs:
@@ -1379,32 +1434,36 @@ async def verificar_spam(message):
             except Exception as e:
                 logger.warning(f"No se pudieron borrar mensajes de spam en #{canal_txt.name}: {e}")
 
-        canal_id = cfg.get("canal_bienvenida")
-        canal_aviso = guild.get_channel(int(canal_id)) if canal_id else discord.utils.get(guild.text_channels, name="general")
-        if canal_aviso:
-            try:
-                await canal_aviso.send(t(gid, "expulsado_spam", usuario=miembro.name), delete_after=10)
-            except Exception:
-                pass
+        # Slowmode progresivo en el canal donde se detectó
+        nivel_actual = slowmode_tracker[canal.id]
+        nuevo_nivel = min(nivel_actual + 1, len(SLOWMODE_NIVELES) - 1)
+        slowmode_tracker[canal.id] = nuevo_nivel
+        segundos_slowmode = SLOWMODE_NIVELES[nuevo_nivel]
+        try:
+            await canal.edit(slowmode_delay=segundos_slowmode)
+        except Exception as e:
+            logger.warning(f"No se pudo aplicar slowmode en #{canal.name}: {e}")
 
         embed = discord.Embed(
             title="🚨 Anti-Spam activado",
-            description=f"**{miembro.mention}** fue expulsado automáticamente por enviar spam.",
+            description=f"**{miembro.mention}** envió spam en {canal.mention}.",
             color=COLORS["spam"]
         )
         embed.set_thumbnail(url=miembro.display_avatar.url)
         embed.add_field(name="👤 Usuario", value=f"`{miembro}` • ID: `{miembro.id}`", inline=True)
-        embed.add_field(name="⚡ Acción", value=t(gid, "spam_accion"), inline=True)
+        embed.add_field(name="⏱️ Slowmode aplicado", value=f"`{segundos_slowmode}s` en {canal.mention}", inline=True)
         embed.set_footer(text="AegisBot • AutoMod", icon_url=bot.user.display_avatar.url if bot.user else None)
         embed.timestamp = discord.utils.utcnow()
         await enviar_log(guild, embed)
 
+        # Aviso en el canal
         try:
-            await miembro.kick(reason="Spam automático.")
-        except discord.Forbidden:
-            logger.warning(f"Anti-spam: sin permisos para expulsar a {miembro} ({miembro.id}) en {guild.name}")
-        except Exception as e:
-            logger.error(f"Anti-spam: error inesperado al expulsar a {miembro}: {e}")
+            await canal.send(
+                f"⚠️ **{miembro.mention}** fue detectado haciendo spam. Slowmode activado: **{segundos_slowmode}s**.",
+                delete_after=10
+            )
+        except Exception:
+            pass
 
         return True
     return False
@@ -1536,20 +1595,6 @@ async def on_ready():
         logger.info(f"Sync global completado — {len(synced)} comandos")
     except Exception as e:
         logger.error(f"Error en sync global: {e}")
-
-    # Warmup HTTP: en Android/Pydroid el primer request HTTPS tarda >3s por
-    # DNS + TLS en frio. Esto lo dispara aqui para que cuando llegue el primer
-    # comando la conexion ya este establecida.
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://discord.com/api/v10/gateway",
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                await resp.read()
-        logger.info("Warmup HTTP completado")
-    except Exception as e:
-        logger.warning(f"Warmup HTTP fallo (no es critico): {e}")
 
 @bot.event
 async def on_guild_join(guild):
@@ -2965,6 +3010,141 @@ class TicketSetupView(ui.View):
 
 # --- Views persistentes (sobreviven reinicios) ---
 
+# Colores por tipo de ticket
+TICKET_TIPO_COLORS = {
+    "soporte":   0x5865F2,
+    "reporte":   0xEF4444,
+    "apelacion": 0xF59E0B,
+}
+TICKET_TIPO_EMOJIS = {
+    "soporte":   "🛠️",
+    "reporte":   "🚨",
+    "apelacion": "⚖️",
+}
+
+
+async def _crear_canal_ticket(interaction: discord.Interaction, tipo: str):
+    """Lógica común para crear un canal de ticket de cualquier tipo."""
+    gid = interaction.guild.id
+    cfg = get_guild_config(gid)
+
+    nombre_canal = f"ticket-{tipo}-{interaction.user.name.lower().replace(' ', '-')}"
+    # Buscar si ya tiene un ticket abierto de ese tipo
+    canal_existente = discord.utils.get(interaction.guild.text_channels, name=nombre_canal)
+    if canal_existente:
+        await interaction.response.send_message(
+            t(gid, "ticket_ya_abierto", canal=canal_existente.mention), ephemeral=True
+        )
+        return
+
+    categoria = None
+    cat_id = cfg.get("ticket_categoria")
+    if cat_id:
+        categoria = interaction.guild.get_channel(int(cat_id))
+
+    cfg["ticket_contador"] = cfg.get("ticket_contador", 0) + 1
+    numero = cfg["ticket_contador"]
+    await guardar_config_async()
+
+    overwrites = {
+        interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+        interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+        interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
+    }
+    rol_id = cfg.get("ticket_rol_soporte")
+    if rol_id:
+        rol = interaction.guild.get_role(int(rol_id))
+        if rol:
+            overwrites[rol] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+    try:
+        canal = await interaction.guild.create_text_channel(
+            name=nombre_canal,
+            overwrites=overwrites,
+            category=categoria,
+            topic=f"Ticket #{numero} [{tipo.upper()}] — {interaction.user} ({interaction.user.id})"
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(t(gid, "sin_permisos_bot"), ephemeral=True)
+        return
+    except Exception as e:
+        logger.error(f"Error creando canal de ticket: {e}")
+        await interaction.response.send_message("❌ Error al crear el ticket.", ephemeral=True)
+        return
+
+    emoji = TICKET_TIPO_EMOJIS.get(tipo, "🎫")
+    color = TICKET_TIPO_COLORS.get(tipo, COLORS["ticket"])
+
+    embed = discord.Embed(
+        title=f"{emoji} Ticket #{numero} — {tipo.capitalize()}",
+        description=t(gid, "ticket_embed_desc", mencion=interaction.user.mention),
+        color=color
+    )
+    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    embed.add_field(name="👤 Usuario", value=f"{interaction.user.mention} • ID: `{interaction.user.id}`", inline=False)
+    embed.add_field(name="🔢 Ticket", value=f"`#{numero}`", inline=True)
+    embed.add_field(name="📋 Tipo", value=f"{emoji} {tipo.capitalize()}", inline=True)
+    embed.add_field(name="📅 Abierto", value=f"<t:{int(discord.utils.utcnow().timestamp())}:R>", inline=True)
+    embed.set_footer(text="AegisBot • Soporte", icon_url=bot.user.display_avatar.url)
+    embed.timestamp = discord.utils.utcnow()
+
+    await canal.send(content=interaction.user.mention, embed=embed, view=TicketCloseView())
+    await interaction.response.send_message(t(gid, "ticket_abierto", canal=canal.mention), ephemeral=True)
+
+    logs_id = cfg.get("ticket_logs")
+    if logs_id:
+        log_canal = interaction.guild.get_channel(int(logs_id))
+        if log_canal:
+            log_embed = discord.Embed(
+                title=f"{emoji} Ticket abierto — {tipo.capitalize()}",
+                description=f"**{interaction.user.mention}** abrió el ticket `#{numero}`.",
+                color=color
+            )
+            log_embed.add_field(name="📋 Canal", value=canal.mention, inline=True)
+            log_embed.add_field(name="👤 Usuario", value=f"`{interaction.user}` • ID: `{interaction.user.id}`", inline=True)
+            log_embed.set_footer(text="AegisBot • Tickets", icon_url=bot.user.display_avatar.url)
+            log_embed.timestamp = discord.utils.utcnow()
+            try:
+                await log_canal.send(embed=log_embed)
+            except Exception as e:
+                logger.warning(f"Error enviando log de ticket abierto: {e}")
+
+
+class TicketTipoSelect(ui.Select):
+    """Select de tipo de ticket. Se crea por interacción, no persiste."""
+    def __init__(self, gid: int):
+        opciones = [
+            discord.SelectOption(
+                label="Soporte",
+                description="Ayuda general con el servidor",
+                value="soporte",
+                emoji="🛠️"
+            ),
+            discord.SelectOption(
+                label="Reporte",
+                description="Reportar a un usuario",
+                value="reporte",
+                emoji="🚨"
+            ),
+            discord.SelectOption(
+                label="Apelación",
+                description="Apelar una sanción recibida",
+                value="apelacion",
+                emoji="⚖️"
+            ),
+        ]
+        super().__init__(
+            placeholder=t(gid, "ticket_selecciona_tipo"),
+            options=opciones,
+            min_values=1,
+            max_values=1
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        tipo = self.values[0]
+        await _crear_canal_ticket(interaction, tipo)
+
+
 class TicketButtonView(ui.View):
     """Panel público de soporte. Persiste entre reinicios."""
     def __init__(self):
@@ -2975,81 +3155,19 @@ class TicketButtonView(ui.View):
         gid = interaction.guild.id
         cfg = get_guild_config(gid)
 
-        nombre_canal = f"ticket-{interaction.user.name.lower().replace(' ', '-')}"
-        canal_existente = discord.utils.get(interaction.guild.text_channels, name=nombre_canal)
-        if canal_existente:
-            await interaction.response.send_message(
-                t(gid, "ticket_ya_abierto", canal=canal_existente.mention), ephemeral=True
-            )
+        # Verificar que el sistema esté configurado
+        if not cfg.get("ticket_canal_soporte"):
+            await interaction.response.send_message(t(gid, "ticket_sin_config"), ephemeral=True)
             return
 
-        categoria = None
-        cat_id = cfg.get("ticket_categoria")
-        if cat_id:
-            categoria = interaction.guild.get_channel(int(cat_id))
-
-        cfg["ticket_contador"] = cfg.get("ticket_contador", 0) + 1
-        numero = cfg["ticket_contador"]
-        await guardar_config_async()
-
-        overwrites = {
-            interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-            interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True),
-        }
-        rol_id = cfg.get("ticket_rol_soporte")
-        if rol_id:
-            rol = interaction.guild.get_role(int(rol_id))
-            if rol:
-                overwrites[rol] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
-
-        try:
-            canal = await interaction.guild.create_text_channel(
-                name=nombre_canal,
-                overwrites=overwrites,
-                category=categoria,
-                topic=f"Ticket #{numero} — {interaction.user} ({interaction.user.id})"
-            )
-        except discord.Forbidden:
-            await interaction.response.send_message(t(gid, "sin_permisos_bot"), ephemeral=True)
-            return
-        except Exception as e:
-            logger.error(f"Error creando canal de ticket: {e}")
-            await interaction.response.send_message("❌ Error al crear el ticket.", ephemeral=True)
-            return
-
-        embed = discord.Embed(
-            title=t(gid, "ticket_embed_titulo", numero=numero),
-            description=t(gid, "ticket_embed_desc", mencion=interaction.user.mention),
-            color=COLORS["ticket"]
+        # Mostrar select de tipo de ticket
+        view = ui.View(timeout=60)
+        view.add_item(TicketTipoSelect(gid))
+        await interaction.response.send_message(
+            t(gid, "ticket_selecciona_tipo"), view=view, ephemeral=True
         )
-        embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.add_field(name="👤 Usuario", value=f"{interaction.user.mention} • ID: `{interaction.user.id}`", inline=False)
-        embed.add_field(name="🔢 Ticket", value=f"`#{numero}`", inline=True)
-        embed.add_field(name="📅 Abierto", value=f"<t:{int(discord.utils.utcnow().timestamp())}:R>", inline=True)
-        embed.set_footer(text="AegisBot • Soporte", icon_url=bot.user.display_avatar.url)
-        embed.timestamp = discord.utils.utcnow()
 
-        await canal.send(content=interaction.user.mention, embed=embed, view=TicketCloseView())
-        await interaction.response.send_message(t(gid, "ticket_abierto", canal=canal.mention), ephemeral=True)
 
-        logs_id = cfg.get("ticket_logs")
-        if logs_id:
-            log_canal = interaction.guild.get_channel(int(logs_id))
-            if log_canal:
-                log_embed = discord.Embed(
-                    title="🎫 Ticket abierto",
-                    description=f"**{interaction.user.mention}** abrió el ticket `#{numero}`.",
-                    color=COLORS["ticket_ok"]
-                )
-                log_embed.add_field(name="📋 Canal", value=canal.mention, inline=True)
-                log_embed.add_field(name="👤 Usuario", value=f"`{interaction.user}` • ID: `{interaction.user.id}`", inline=True)
-                log_embed.set_footer(text="AegisBot • Tickets", icon_url=bot.user.display_avatar.url)
-                log_embed.timestamp = discord.utils.utcnow()
-                try:
-                    await log_canal.send(embed=log_embed)
-                except Exception as e:
-                    logger.warning(f"Error enviando log de ticket abierto: {e}")
 
 
 class TicketCloseView(ui.View):
@@ -3069,37 +3187,90 @@ class TicketCloseView(ui.View):
 
         await interaction.response.defer()
 
-        transcript_lines = []
+        # Recopilar mensajes para el transcript
+        msgs_transcript = []
         try:
-            async for msg in canal.history(limit=100, oldest_first=True):
-                if msg.author.bot and not msg.embeds:
+            async for msg in canal.history(limit=200, oldest_first=True):
+                if msg.author.bot and not msg.content and not msg.embeds:
                     continue
-                ts = msg.created_at.strftime("%d/%m/%Y %H:%M")
-                contenido = msg.content or "[embed/adjunto]"
-                transcript_lines.append(f"[{ts}] {msg.author}: {contenido}")
+                msgs_transcript.append(msg)
         except Exception as e:
-            logger.warning(f"Error generando transcript: {e}")
+            logger.warning(f"Error recopilando transcript: {e}")
 
         logs_id = cfg.get("ticket_logs")
         if logs_id:
             log_canal = interaction.guild.get_channel(int(logs_id))
             if log_canal:
-                transcript_txt = "\n".join(transcript_lines) if transcript_lines else "Sin mensajes."
-                if len(transcript_txt) > 3800:
-                    transcript_txt = transcript_txt[-3800:]
+                # Generar HTML del transcript
+                nombre_ticket = canal.name
+                cerrado_por = str(interaction.user)
+                fecha_cierre = discord.utils.utcnow().strftime("%d/%m/%Y %H:%M UTC")
+
+                filas_html = ""
+                for msg in msgs_transcript:
+                    ts = msg.created_at.strftime("%H:%M")
+                    autor = msg.author.display_name
+                    contenido = msg.content or ""
+                    # Adjuntos
+                    for att in msg.attachments:
+                        contenido += f" [adjunto: {att.filename}]"
+                    # Embeds
+                    for emb in msg.embeds:
+                        titulo_emb = emb.title or ""
+                        contenido += f" [embed: {titulo_emb}]"
+                    contenido = contenido.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+                    es_bot = "bot" if msg.author.bot else ""
+                    filas_html += f'<tr class="{es_bot}"><td class="ts">{ts}</td><td class="autor">{autor}</td><td class="msg">{contenido}</td></tr>\n'
+
+                html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Transcript — {nombre_ticket}</title>
+<style>
+  body {{ font-family: 'Segoe UI', sans-serif; background: #1e1f2e; color: #c9cdd4; margin: 0; padding: 20px; }}
+  h1 {{ color: #7289da; border-bottom: 2px solid #7289da; padding-bottom: 8px; }}
+  .meta {{ color: #72767d; font-size: 0.85em; margin-bottom: 20px; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  tr:nth-child(even) {{ background: #2a2d3e; }}
+  td {{ padding: 6px 10px; vertical-align: top; }}
+  .ts {{ color: #72767d; white-space: nowrap; width: 50px; font-size: 0.85em; }}
+  .autor {{ color: #7289da; white-space: nowrap; width: 160px; font-weight: bold; }}
+  .msg {{ word-break: break-word; }}
+  tr.bot .autor {{ color: #43b581; }}
+</style>
+</head>
+<body>
+<h1>📋 Transcript — {nombre_ticket}</h1>
+<div class="meta">
+  Cerrado por: <strong>{cerrado_por}</strong> &nbsp;|&nbsp;
+  Fecha: <strong>{fecha_cierre}</strong> &nbsp;|&nbsp;
+  Mensajes: <strong>{len(msgs_transcript)}</strong>
+</div>
+<table>
+  <thead><tr><th>Hora</th><th>Usuario</th><th>Mensaje</th></tr></thead>
+  <tbody>
+{filas_html}  </tbody>
+</table>
+</body>
+</html>"""
+
+                html_bytes = html.encode("utf-8")
+                archivo = discord.File(
+                    fp=io.BytesIO(html_bytes),
+                    filename=f"transcript-{nombre_ticket}.html"
+                )
                 log_embed = discord.Embed(
                     title=t(gid, "ticket_transcript_titulo"),
-                    description=f"```\n{transcript_txt}\n```",
+                    description=f"Canal: **{nombre_ticket}** · Cerrado por: **{cerrado_por}**",
                     color=COLORS["ticket_cerrado"]
                 )
-                log_embed.add_field(name="📋 Canal", value=canal.name, inline=True)
-                log_embed.add_field(name="🔒 Cerrado por", value=str(interaction.user), inline=True)
                 log_embed.set_footer(text="AegisBot • Tickets", icon_url=bot.user.display_avatar.url)
                 log_embed.timestamp = discord.utils.utcnow()
                 try:
-                    await log_canal.send(embed=log_embed)
+                    await log_canal.send(embed=log_embed, file=archivo)
                 except Exception as e:
-                    logger.warning(f"Error enviando transcript: {e}")
+                    logger.warning(f"Error enviando transcript HTML: {e}")
 
         try:
             await canal.send(t(gid, "ticket_cerrado_msg", usuario=str(interaction.user)))
@@ -3263,10 +3434,10 @@ async def giveaway(interaction: discord.Interaction, plataforma: app_commands.Ch
 # ==================================================================================================
 
 def get_reportes() -> dict:
-    return server_config.setdefault("__reportes__", {})
+    return reportes_globales
 
 def guardar_reportes():
-    guardar_config(server_config)
+    _guardar_reportes_file(reportes_globales)
 
 @bot.tree.command(name="reportar", description="Reporta a un usuario globalmente.")
 @app_commands.describe(
@@ -3322,7 +3493,7 @@ async def reportar(interaction: discord.Interaction, motivo: str, miembro: disco
         "servidor": interaction.guild.name,
         "servidor_id": str(gid),
     }
-    guardar_reportes()
+    await guardar_reportes_async()
 
     embed = discord.Embed(
         title="🚨 Nuevo reporte global",
@@ -3362,7 +3533,7 @@ async def quitar_reporte(interaction: discord.Interaction, usuario: str):
         return
 
     del reportes[uid]
-    guardar_reportes()
+    await guardar_reportes_async()
     await interaction.followup.send(t(gid, "reporte_quitado", usuario=uid), ephemeral=True)
 
 
@@ -3402,11 +3573,21 @@ async def lista_reportes(interaction: discord.Interaction):
 
 
 if __name__ == "__main__":
-    try:
-        bot.run(CONFIG["TOKEN"])
-    except discord.errors.LoginFailure:
-        logger.error("Token inválido.")
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        logger.error(f"Error crítico: {e}")
+    import time as _time
+    while True:
+        try:
+            bot.run(CONFIG["TOKEN"])
+        except discord.errors.LoginFailure:
+            logger.error("Token inválido.")
+            break
+        except discord.errors.PrivilegedIntentsRequired:
+            logger.error("Intents privilegiados no habilitados en el portal de desarrolladores.")
+            break
+        except KeyboardInterrupt:
+            logger.info("Bot apagado manualmente.")
+            break
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            logger.error(f"Bot crasheó: {e} — reiniciando en 10s")
+            _time.sleep(10)
